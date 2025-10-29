@@ -10,7 +10,7 @@ import importlib
 import inspect
 
 # 1. 캐시 초기화는 유지
-st.cache_data.clear()
+#st.cache_data.clear()
 
 # =========================================================================
 # 🚀 Streamlit 앱 메인 실행 로직 (초기 설정)
@@ -131,14 +131,11 @@ def _clean_value(value: str) -> str:
 def load_all_safety_data(csv_file_paths, required_cols: List[str]):
     """
     여러 CSV 파일을 로드하여 하나의 DataFrame으로 결합하고, 필수 컬럼을 체크합니다.
-    (이전 코드와 동일, 생략)
+    (로딩 실패 반복 루프 제거됨)
     """
     all_dfs = []
     load_logs = []
 
-    encodings = ["utf-8-sig", "cp949", "euc-kr"]
-    seps = [",", ";", "\t", None]
-    
     # [새로운 정의] 점검항목과 점검 세부항목을 결합해야 하는 파일 목록
     FILES_TO_MERGE = ["신호제어설비 유지보수 세칙.csv", "전철전력설비 유지보수 세칙(송변전설비).csv"]
 
@@ -149,24 +146,27 @@ def load_all_safety_data(csv_file_paths, required_cols: List[str]):
 
         df = None
         last_err = None
-        # ... (인코딩 및 분리 문자 시도 로직 생략)
-        for enc in encodings:
-            for sep in seps:
-                try:
-                    if sep is None:
-                        tmp = pd.read_csv(p, encoding=enc, engine="python", sep=None, low_memory=False)
-                    else:
-                        tmp = pd.read_csv(p, encoding=enc, sep=sep, low_memory=False)
-                    df = tmp
-                    break
-                except Exception as e:
-                    last_err = e
-                    continue
-            if df is not None:
-                break
+        
+        # --- 🚨 수정된 핵심 로직: 단 하나의 로딩 시도 ---
+        try:
+            # 1. UTF-8-SIG와 쉼표(,)로 우선 시도
+            df = pd.read_csv(p, encoding="utf-8-sig", sep=",", low_memory=False)
+            
+        except Exception:
+            # 2. 실패 시, CP949로 재시도 (한글 윈도우 인코딩)
+            try:
+                df = pd.read_csv(p, encoding="cp949", sep=",", low_memory=False)
+            except Exception as e:
+                # 3. 최종 실패 기록
+                last_err = e
+                df = None
+        # --- 🚨 수정된 핵심 로직 끝 ---
+        
         # ... (파일 로드 실패 처리 생략)
         if df is None:
-            load_logs.append((str(p), f"❌ 읽기 실패: {type(last_err).__name__}: {last_err}"))
+            # 원인 분석을 위해 에러 로그를 명확하게 남김
+            if not load_logs or "❌ 파일 없음" not in load_logs[-1]: 
+                 load_logs.append((str(p), f"❌ 최종 읽기 실패: {type(last_err).__name__} (파일 인코딩/형식 오류)"))
             continue
 
         # 컬럼 정리: 공백/개행/BOM 제거
@@ -492,4 +492,5 @@ with tab2:
                     for sentence in summary_sentences:
                         st.markdown(f"- {sentence}")
                 else:
+
                     st.info("문장 요약 결과를 생성할 수 없습니다.")
