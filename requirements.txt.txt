@@ -1,0 +1,7 @@
+# requirements.txt 예시
+streamlit==1.36.0
+pandas==2.2.2
+# Gemini API를 사용하는 경우
+google-genai 
+# 또는 google-generativeai
+# 기타 필요한 라이브러리 (예: openpyxl, pillow 등)
