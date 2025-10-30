@@ -6,13 +6,13 @@ from difflib import SequenceMatcher
 import re
 from collections import Counter
 import warnings
+
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # ──────────────────────────────────────────────────────────
-# 기본 UI는 즉시 보이도록, 무거운 모듈은 "지연 로딩"합니다.
+# 기본 UI 및 경로
 # ──────────────────────────────────────────────────────────
-
 st.set_page_config(
     page_title="작업계획서 작성지원 + 문서 QA (Gemini)",
     layout="wide",
@@ -47,18 +47,18 @@ MAINTENANCE_COLUMN_MAPS: Dict[str, Dict[str, str]] = {
 # CSV 유틸
 # ──────────────────────────────────────────────────────────
 def _get_rule_name_from_filename(filename: str) -> str:
-    name = filename.replace('.csv', '').replace('.pdf', '')
-    m = re.search(r'(.+설비)\s*유지보수\s*세칙', name)
+    name = filename.replace(".csv", "").replace(".pdf", "")
+    m = re.search(r"(.+설비)\s*유지보수\s*세칙", name)
     return (m.group(1).strip() + " 유지보수 세칙") if m else name.strip()
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def _read_csv_any(path: Path) -> pd.DataFrame:
     try:
         return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
     except Exception:
         return pd.read_csv(path, encoding="cp949", low_memory=False)
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_risk_data() -> pd.DataFrame:
     all_dfs = []
     for pattern in RISK_CSV_GLOBS:
@@ -84,7 +84,7 @@ def load_risk_data() -> pd.DataFrame:
                 st.warning(f"CSV 로드 실패: {p.name} → {type(e).__name__}")
     return pd.concat(all_dfs, ignore_index=True).dropna(how="all") if all_dfs else pd.DataFrame(columns=["작업명","위험요인","안전조치방법"])
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_maint_data() -> pd.DataFrame:
     all_dfs = []
     for pattern in MAINT_CSV_GLOBS:
@@ -165,7 +165,7 @@ def summarize_maint(df: pd.DataFrame) -> List[str]:
     return sents
 
 # ──────────────────────────────────────────────────────────
-# 문서 QA: 무거운 것들은 함수 안에서 import (지연 로딩)
+# 문서 QA (지연 로딩: 무거운 라이브러리 import는 함수 안에서)
 # ──────────────────────────────────────────────────────────
 def build_embeddings():
     from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -177,7 +177,7 @@ def build_embeddings():
 
 def get_text(uploaded_docs):
     from loguru import logger
-    from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredPowerPointLoader
+    from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
     docs = []
     for doc in uploaded_docs:
         file_name = doc.name
@@ -188,17 +188,18 @@ def get_text(uploaded_docs):
             loader = PyPDFLoader(file_name)
         elif file_name.lower().endswith(".docx"):
             loader = Docx2txtLoader(file_name)
-        elif file_name.lower().endswith(".pptx"):
-            loader = UnstructuredPowerPointLoader(file_name)
         else:
             continue
         docs.extend(loader.load_and_split())
     return docs
 
 def tiktoken_len(text: str) -> int:
-    import tiktoken
-    tok = tiktoken.get_encoding("cl100k_base")
-    return len(tok.encode(text))
+    try:
+        import tiktoken
+        tok = tiktoken.get_encoding("cl100k_base")
+        return len(tok.encode(text))
+    except Exception:
+        return len(text)
 
 def split_chunks(documents):
     from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -213,12 +214,10 @@ def chunks_to_vectordb(chunks):
     return FAISS.from_documents(chunks, emb)
 
 def get_conversation_chain(vstore, gemini_api_key: str):
-    # ✅ 핵심 변경: OpenAI → Google Gemini
     from langchain.chains import ConversationalRetrievalChain
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain.memory import ConversationBufferMemory
 
-    # 모델은 'gemini-1.5-pro' (정확도 높음) 또는 'gemini-1.5-flash' (빠르고 저렴) 사용
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-pro",
         google_api_key=gemini_api_key,
@@ -244,13 +243,19 @@ st.caption("CSV 기반 위험성/세칙 검색과 업로드 문서 QA를 한 곳
 with st.sidebar:
     st.subheader("🔧 공통 설정")
     gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
+    if not gemini_api_key:
+        st.info("Secrets에 GEMINI_API_KEY를 등록하세요. (⋯ → Edit secrets)")
     st.markdown("---")
     st.subheader("📚 문서 업로드 (QA)")
-    uploaded_files = st.file_uploader("PDF / DOCX / PPTX 파일 업로드", type=["pdf","docx","pptx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader(
+        "PDF / DOCX 파일 업로드",
+        type=["pdf", "docx"],
+        accept_multiple_files=True
+    )
     process_docs = st.button("문서 임베딩 생성")
 
-# 상태
-if "qa_chain" not in st.session_state: st.session_state.qa_chain = None
+if "qa_chain" not in st.session_state:
+    st.session_state.qa_chain = None
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role":"assistant","content":"안녕하세요! 문서 QA 또는 CSV 검색 탭에서 시작해 보세요."}]
 
@@ -261,9 +266,9 @@ with qa_tab:
     st.info("좌측 사이드바에서 문서를 업로드한 뒤 **문서 임베딩 생성**을 눌러주세요.")
     if process_docs:
         if not gemini_api_key:
-            st.warning("Gemini API Key를 입력해주세요."); st.stop()
+            st.warning("Gemini API Key를 Secrets에 추가해 주세요."); st.stop()
         if not uploaded_files:
-            st.warning("문서를 업로드해주세요."); st.stop()
+            st.warning("문서를 업로드해 주세요."); st.stop()
         with st.spinner("문서 처리 및 벡터스토어 생성 중... (최초 실행은 시간이 걸릴 수 있습니다)"):
             docs = get_text(uploaded_files)
             chunks = split_chunks(docs)
@@ -278,10 +283,11 @@ with qa_tab:
     user_q = st.chat_input("문서에 대해 질문을 입력하세요")
     if user_q:
         if st.session_state.qa_chain is None:
-            st.warning("먼저 문서를 업로드하고 임베딩을 생성해주세요.")
+            st.warning("먼저 문서를 업로드하고 임베딩을 생성해 주세요.")
         else:
             st.session_state.messages.append({"role":"user","content":user_q})
-            with st.chat_message("user"): st.markdown(user_q)
+            with st.chat_message("user"):
+                st.markdown(user_q)
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     result = st.session_state.qa_chain({"question": user_q})
@@ -341,5 +347,7 @@ with maint_tab:
             st.success(f"'{q2}' 관련 {len(res):,}개 결과")
             show_cols = [c for c in ["세칙명","설비명","점검주기","점검종류","점검항목"] if c in res.columns]
             st.dataframe(res[show_cols], use_container_width=True)
-            st.markdown("---"); st.subheader("💬 문장 요약 결과")
-            for s in summarize_maint(res): st.markdown(f"- {s}")
+            st.markdown("---")
+            st.subheader("💬 문장 요약 결과")
+            for s in summarize_maint(res):
+                st.markdown(f"- {s}")
